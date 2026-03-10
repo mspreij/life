@@ -1,0 +1,425 @@
+#!/usr/bin/env php
+<?php
+
+/*
+
+Do you
+- extend a base class and override things
+- just instantiate it and customize it
+- instantiate it, inject actual code for the advance/edit parts and then hit run
+Drawing:
+* display both drawing mode and brush in header
+- space still simply toggles
+  - for wireworld, maybe numbers can set/toggle (store previous value) a specific value instead of space cycling through all options
+- set_header($str), reset_header() ? or set sub-part values that get_header() uses?
+  - end status/header display with the last few characters in (increasing?) red if the whole thing doesn't fit
+- print_footer($this->footer) called in display_all(true), and print_footer($str) in [re]set_footer([$str])
+
+*/
+
+$target_class = basename($argv[0]);
+
+
+$l = new $target_class;
+$l->run();
+
+
+class clife {
+
+    public int $width;
+    public int $height;
+    protected $grid = []; // virtual grid
+    protected $field = []; // terminal character grid
+    public int $g_width;
+    public int $g_height;
+    protected $pointer = [1, 1];
+
+    public int $generation = 0;
+    public bool $blocking = true;
+    protected int $usleep = 20_000; // if not blocking, still sleep this long every loop
+    protected int $speed = 12;
+    protected bool $running = false;
+    protected bool $drawing = false; // use the pointer to create lines of brush color just by moving
+    protected bool $first_draw = false; // used for UI/UX #reasons
+    protected array $colors = [
+        'dead',
+        'alive',
+    ];
+    protected int $brush = 1;
+    
+    protected array $input_handlers = [];
+
+    protected $footer = "Return: run/pause; space: toggle cell; s: step; +/-: faster/slower";
+
+    public function __construct() {
+        $this->init_shell();
+        $this->init_ca();
+    }
+
+    protected function init_shell() {
+        global $blocking, $usleep;
+        $this->usleep = $usleep = (int) ((1 / $this->speed)*10**6);
+        $blocking = $this->blocking;
+        include 'inc/boilerplate.inc.php'; // 
+        $this->height = $height;
+        $this->width  = $width;
+    }
+
+    protected function init_ca() {
+        $this->init_handlers();
+        $this->add_shortcuts();
+        $this->g_width = $this->width - 2; // $grid is half-chars, 1-based 2-dim, int values, [y][x]
+        $this->g_height = ($this->height-4) * 2;
+        $this->pointer = [(int) ceil($this->g_width / 2), (int) ceil($this->g_height/2)]; // init pointer (for editing) to center
+        $this->init_grid();
+
+    }
+
+    protected function add_shortcuts() {
+        global $allowed_bytes, $allowed_keys; // these have to be global for get_key(). for now.
+        foreach($this->custom_keys() as $byte => $key) {
+            $allowed_keys[$byte]  = $key;
+            $allowed_bytes[$byte] = $byte;
+        }
+    }
+
+    protected function custom_keys() {
+        $custom_keys = [
+            's' => 'step',
+            'd' => 'draw',
+            'b' => 'brush',
+            'D' => 'dedraw',
+            '+' => 'faster',
+            '-' => 'slower',
+            'r' => 'random',
+            'c' => 'clear',
+        ];
+        return $custom_keys;
+    }
+
+    public function run() {
+        $this->display_all(true); // true: include frame border
+        // ===== WHILE LOOP =================================================================================
+        while (1) {
+            $key = get_key();
+            $this->handle_key($key);
+            debugs([
+                'key' => $key,
+                'speed' => $this->speed,
+                'width' => $this->width,
+                'height' => $this->height,
+            ]);
+            
+            if ($this->running) $this->advance_grid();
+            $this->display_all();
+            if (empty($this->blocking)) usleep($this->usleep);
+        }
+    }
+
+    protected function init_handlers() {
+        $this->input_handlers = $this->get_input_handlers();
+    }
+    
+    protected function get_input_handlers() {
+        return [
+            'enter'    => fn() => $this->running ? $this->pause() : $this->resume(),
+            'space'    => fn() => $this->toggle_cell($this->pointer),
+            'up'       => fn() => $this->move_pointer('up'),
+            'pageup'   => fn() => $this->move_pointer('pageup'),
+            'pagedown' => fn() => $this->move_pointer('pagedown'),
+            'down'     => fn() => $this->move_pointer('down'),
+            'left'     => fn() => $this->move_pointer('left'),
+            'right'    => fn() => $this->move_pointer('right'),
+            'step'     => function() {
+                $this->pause();
+                $this->advance_grid();
+            },
+            'draw'   => fn() => $this->draw(),
+            'brush'  => fn() => $this->brush(),
+            'faster' => function() {
+                $this->speed++;
+                $this->usleep = (int) ((1 / $this->speed)*10**6);
+            },
+            'slower' => function() {
+                $this->speed = max(1, $this->speed-1);
+                $this->usleep = (int) ((1 / $this->speed)*10**6);
+            },
+            'random' => fn() => $this->random_pattern(),
+            'clear'  => function() {
+                $this->init_grid();
+                $this->pause();
+            },
+            'quit'   => fn() => die(),
+        ];
+    }
+
+    function handle_key($key) {
+        if (! $key) return;
+        if (isset($this->input_handlers[$key])) {
+            $this->input_handlers[$key]();
+        }else{
+            debug("Warning: Unknown key: $key");
+        }
+    }
+
+    function display_all($all=false) {
+        if ($all) {
+            $this->print_frame();
+        }
+        $this->map_grid();
+        if (! $this->running) $this->map_pointer();
+        $out_str = "\e[H".substr(str_pad($this->get_status(), $this->width), 0, $this->width);
+        if ($all) $out_str .= "\e[{$this->height};1H ". substr($this->footer, 0, $this->width-1);
+        foreach ($this->field as $y => $row) $f[]=join('', $row);
+        $of = "\e[3;2H".join("\n\e[C", $f);
+        echo $out_str.$of;
+        $this->debug_coords();
+    }
+
+    function draw() {
+        $this->pause();
+        if (! $this->drawing) {
+            $this->drawing = true;
+            $this->first_draw = true;
+        }else{
+            $this->drawing = false;
+        }
+    }
+
+    function brush($color='') {
+        $this->brush = isset($this->colors[$this->brush + 1]) ? $this->brush + 1 : 0;
+    }
+
+    function toggle_cell($coords) {
+        $this->pause();
+        [$x, $y] = $coords;
+        $this->grid[$y][$x] = $this->grid[$y][$x] ? 0 : $this->brush;
+    }
+
+    protected function move_pointer($direction) {
+        $this->pause();
+        [$current_x, $current_y] = $this->pointer;
+        switch ($direction) {
+            case 'up':
+                $this->pointer[1] > 1 ? $this->pointer[1]-- : $this->pointer[1] = $this->g_height;
+                break;
+            case 'pageup':
+                $this->pointer[1] = max(1, $this->pointer[1]-10);
+                break;
+            case 'down':
+                $this->pointer[1] < $this->g_height ? $this->pointer[1]++ : $this->pointer[1] = 1;
+                break;
+            case 'pagedown':
+                $this->pointer[1] = min($this->g_height, $this->pointer[1]+10);
+                break;
+            case 'left':
+                $this->pointer[0] > 1 ? $this->pointer[0]-- : $this->pointer[0] = $this->g_width;
+                break;
+            case 'right':
+                $this->pointer[0] < $this->g_width ? $this->pointer[0]++ : $this->pointer[0] = 1;
+                break;
+        }
+        if ($this->drawing) {
+            // both current and next, so it starts drawing on the spot you are when you start moving
+            $this->grid[$this->pointer[1]][$this->pointer[0]] = $this->grid[$current_y][$current_x] = $this->brush;
+        }
+    }
+
+    protected function advance_grid() {
+        $new_grid = [];
+        foreach($this->grid as $y => $row) {
+            foreach($row as $x => $c) {
+                $py = $y > 1 ? $y-1 : $this->g_height;
+                $ny = $y < $this->g_height ? $y+1 : 1;
+                $px = $x > 1 ? $x-1 : $this->g_width;
+                $nx = $x < $this->g_width ? $x+1 : 1;
+                $nbrs = $this->grid[$py][$px] + $this->grid[$py][$x] + $this->grid[$py][$nx] + 
+                        $this->grid[$y][$px]  + $this->grid[$y][$nx] + 
+                        $this->grid[$ny][$px] + $this->grid[$ny][$x] + $this->grid[$ny][$nx];
+                if ($this->grid[$y][$x]) {
+                    if ($nbrs < 2 or $nbrs > 3) {
+                        $new_grid[$y][$x] = 0;
+                    }else{
+                        $new_grid[$y][$x] = 1;
+                    }
+                }elseif ($nbrs === 3) {
+                    $new_grid[$y][$x] = 1;
+                }else{
+                    $new_grid[$y][$x] = 0;
+                }
+            }
+        }
+        $this->grid = $new_grid;
+        $this->generation++;
+    }
+
+    function get_status() {
+        $speed_gen = "speed $this->speed; gen $this->generation;";
+        $pointer = "pointer {$this->pointer[0]},{$this->pointer[1]};";
+        if ($this->drawing) {
+            $str = "Drawing: {$this->colors[$this->brush]};";
+        }elseif ($this->running) {
+            $str = "Running; $speed_gen";
+        }else{
+            $str = "Paused; $speed_gen $pointer";
+        }
+        return $str;
+    }
+
+    function map_grid() { // puts grid (virtual) on field (terminal characters)
+        // todo: if advance_grid didn't run, this can use a cached value?
+        $map = ['10' => '▀', '01' => '▄', '11' => '█'];
+        for ($i = 1; $i < $this->g_height; $i+=2) {
+            for ($j = 1; $j <= $this->g_width; $j++) {
+                $y = ($i+1)/2; // +1/2 to turn 1,3,5->1,2,3
+                $x = $j;
+                if ($this->grid[$i][$j] or $this->grid[$i+1][$j]) {
+                    $this->field[$y][$x] = $map[$this->grid[$i][$j].$this->grid[$i+1][$j]];
+                }else{
+                    $this->field[$y][$x] = ' ';
+                }
+            }
+        }
+    }
+
+    function map_pointer() {
+        // pointer x, y (grid based)
+        [$px, $py] = $this->pointer;
+        // 'alt' y coord of the other grid cell in the same $out char
+        $ay = $py % 2 ? $py + 1 : $py - 1;
+        // $out x and y coords (terminal based)
+        $ox = $px;
+        $oy = ceil($py / 2);
+        // color and background
+        $color = $this->grid[$py][$px] ? 208 : 196; // todo: move color values to properties
+        $bg = $this->grid[$ay][$px] ? "\e[48:5:15m" : '';
+        $this->field[$oy][$ox] = "$bg\e[38;5;{$color}m".($py%2?"▀":"▄")."\e[0m";
+    }
+
+    function print_frame() {
+        echo "\e[2H┌".str_repeat('─', $this->width-2).'┐';
+        for ($i=3; $i <= ($this->height-2); $i++) {
+            echo "\e[{$i}H│\e[{$i};{$this->width}H│";
+        }
+        echo "\e[".($this->height - 1)."H└".str_repeat('─', $this->width-2).'┘';
+    }
+
+    protected function random_pattern() {
+        $this->init_grid();
+        for($y = floor($this->g_height*0.25); $y < floor($this->g_height*0.75); $y++) {
+            for($x = floor($this->g_width*0.25); $x < floor($this->g_width*0.75); $x++) {
+                $this->grid[$y][$x] = (int) !mt_rand(0, 2);
+            }
+        }
+    }
+
+    function pause() {
+        if (! $this->running) return;
+        $this->set_blocking($this->blocking = true);
+        $this->running = false;
+    }
+
+    function resume() {
+        if ($this->running) return;
+        $this->drawing = 0;
+        $this->set_blocking($this->blocking = false);
+        $this->running = true;
+    }
+
+    function set_blocking(bool $block) {
+        stream_set_blocking(STDIN, $block);
+    }
+
+    function init_grid() {
+        $this->generation = 0;
+        $this->grid = array_fill(1, $this->g_height, array_fill(1, $this->g_width, 0));
+    }
+
+    protected function debug_coords() {
+        $debug = [
+            'width'    =>$this->width,
+            'height'   =>$this->height,
+            'g_width'  =>$this->g_width,
+            'g_height' =>$this->g_height,
+            'pointer'  =>$this->pointer,
+        ];
+        debugs($debug);
+    }
+
+}
+
+
+class wireworld extends clife {
+    protected array $colors = [
+        'empty',
+        'wire',
+        'head',
+        'tail',
+    ];
+
+    function map_grid() { // puts grid (virtual) on field (terminal characters)
+        // todo: if advance_grid didn't run, this can use a cached value?
+        $map = ['00' => [' ', ""],       '01' => ['▄', "\e[33m"],    '02' => ['▄', "\e[34m"],    '03' => ['▄', "\e[31m"],
+                '10' => ['▀', "\e[33m"], '11' => [' ', "\e[43m"],    '12' => ['▄', "\e[43;34m"], '13' => ['▄', "\e[43;31m"],
+                '20' => ['▀', "\e[34m"], '21' => ['▀', "\e[34;43m"], '22' => [' ', "\e[44m"],    '23' => ['▄', "\e[44;31m"],
+                '30' => ['▀', "\e[31m"], '31' => ['▀', "\e[31;43m"], '32' => ['▀', "\e[31;44m"], '33' => [' ', "\e[41m"],
+                ];
+        $reset = "\e[0m";
+        for ($i = 1; $i < $this->g_height; $i+=2) {
+            $prev_index = null;
+            for ($x = 1; $x <= $this->g_width; $x++) {
+                $y = ($i+1)/2; // +1/2 to turn 1,3,5->1,2,3
+                $index = $this->grid[$i][$x] . $this->grid[$i+1][$x];
+                // don't repeat same color, to try and keep bytes out low
+                $this->field[$y][$x] = ($prev_index !== $index ? ($reset . $map[$index][1]) : '') . $map[$index][0];
+                // test vs this one:
+                //$this->field[$y][$x] = $reset . $map[$index][1] . $map[$index][0];
+                $prev_index = $index;
+            }
+            $this->field[$y][$x-1] .= $reset;
+        }
+    }
+
+    protected function advance_grid() {
+        $new_grid = [];
+        foreach($this->grid as $y => $row) {
+            foreach($row as $x => $c) {
+                if ($this->grid[$y][$x] != 1) {
+                    if ($this->grid[$y][$x] == 0) $new_grid[$y][$x] = 0; // background
+                    if ($this->grid[$y][$x] == 2) $new_grid[$y][$x] = 3; // head becomes tail
+                    if ($this->grid[$y][$x] == 3) $new_grid[$y][$x] = 1; // tail becomes wire
+                    continue;
+                }
+                // current (hah) coords are wire. with 1 or 2 adjacent heads, it becomes head.
+                $py = $y > 1 ? $y-1 : $this->g_height;
+                $ny = $y < $this->g_height ? $y+1 : 1;
+                $px = $x > 1 ? $x-1 : $this->g_width;
+                $nx = $x < $this->g_width ? $x+1 : 1;
+                $nbrs = ($this->grid[$py][$px]==2) + ($this->grid[$py][$x]==2) + ($this->grid[$py][$nx]==2) + 
+                        ($this->grid[$y][$px]==2)  + ($this->grid[$y][$nx]==2) + 
+                        ($this->grid[$ny][$px]==2) + ($this->grid[$ny][$x]==2) + ($this->grid[$ny][$nx]==2);
+                if ($nbrs == 1 or $nbrs == 2) {
+                    $new_grid[$y][$x] = 2;
+                }else{
+                    $new_grid[$y][$x] = 1;
+                }
+            }
+        }
+        $this->grid = $new_grid;
+        $this->generation++;
+    }
+
+    function get_input_handlers() {
+        $handlers = parent::get_input_handlers();
+        $handlers['clear'] = function() {
+            foreach($this->grid as $y => $row) {
+                foreach($row as $x => $value) {
+                    if ($value > 1) $this->grid[$y][$x] = 1;
+                }
+            }
+            $this->pause();
+        };
+        return $handlers;
+    }
+
+}
