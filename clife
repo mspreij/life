@@ -45,6 +45,7 @@ class clife {
         'dead',
         'alive',
     ];
+    protected $map = ['00'=>[' ', ''], '10' => ['▀', ''], '01' => ['▄', ''], '11' => ['█', '']];
     protected int $brush = 1;
     
     protected array $input_handlers = [];
@@ -268,17 +269,20 @@ class clife {
 
     function map_grid() { // puts grid (virtual) on field (terminal characters)
         // todo: if advance_grid didn't run, this can use a cached value?
-        $map = ['10' => '▀', '01' => '▄', '11' => '█'];
+        // later: once grid int values become multidigit, add a delimiter to this map's keys
+        $reset = "\e[0m";
         for ($i = 1; $i < $this->g_height; $i+=2) {
-            for ($j = 1; $j <= $this->g_width; $j++) {
+            $prev_index = null;
+            for ($x = 1; $x <= $this->g_width; $x++) {
                 $y = ($i+1)/2; // +1/2 to turn 1,3,5->1,2,3
-                $x = $j;
-                if ($this->grid[$i][$j] or $this->grid[$i+1][$j]) {
-                    $this->field[$y][$x] = $map[$this->grid[$i][$j].$this->grid[$i+1][$j]];
-                }else{
-                    $this->field[$y][$x] = ' ';
-                }
+                $index = $this->grid[$i][$x] . $this->grid[$i+1][$x];
+                // don't repeat same color, to try and keep bytes out low
+                $this->field[$y][$x] = ($prev_index !== $index ? ($reset . $this->map[$index][1]) : '') . $this->map[$index][0];
+                // test vs this one:
+                // $this->field[$y][$x] = $reset . $this->map[$index][1] . $this->map[$index][0];
+                $prev_index = $index;
             }
+            $this->field[$y][$x-1] .= $reset;
         }
     }
 
@@ -287,13 +291,16 @@ class clife {
         [$px, $py] = $this->pointer;
         // 'alt' y coord of the other grid cell in the same $out char
         $ay = $py % 2 ? $py + 1 : $py - 1;
+        // the index of ->map that the grid would have without pointer, to continue any existing run of bg color
+        $index = $this->grid[min($py, $ay)][$px] . $this->grid[max($py, $ay)][$px];
         // $out x and y coords (terminal based)
         $ox = $px;
         $oy = ceil($py / 2);
         // color and background
         $color = $this->grid[$py][$px] ? 208 : 196; // todo: move color values to properties
-        $bg = $this->grid[$ay][$px] ? "\e[48:5:15m" : '';
-        $this->field[$oy][$ox] = "$bg\e[38;5;{$color}m".($py%2?"▀":"▄")."\e[0m";
+        $bg = $this->grid[$ay][$px] ? "\e[48:5:15m" : "\e[0m";
+        $this->field[$oy][$ox] = "$bg\e[38;5;{$color}m".($py%2?"▀":"▄")."\e[0m".$this->map[$index][1];
+        debug('wat');
     }
 
     function print_frame() {
@@ -357,28 +364,11 @@ class wireworld extends clife {
         'tail',
     ];
 
-    function map_grid() { // puts grid (virtual) on field (terminal characters)
-        // todo: if advance_grid didn't run, this can use a cached value?
-        $map = ['00' => [' ', ""],       '01' => ['▄', "\e[33m"],    '02' => ['▄', "\e[34m"],    '03' => ['▄', "\e[31m"],
-                '10' => ['▀', "\e[33m"], '11' => [' ', "\e[43m"],    '12' => ['▄', "\e[43;34m"], '13' => ['▄', "\e[43;31m"],
-                '20' => ['▀', "\e[34m"], '21' => ['▀', "\e[34;43m"], '22' => [' ', "\e[44m"],    '23' => ['▄', "\e[44;31m"],
-                '30' => ['▀', "\e[31m"], '31' => ['▀', "\e[31;43m"], '32' => ['▀', "\e[31;44m"], '33' => [' ', "\e[41m"],
-                ];
-        $reset = "\e[0m";
-        for ($i = 1; $i < $this->g_height; $i+=2) {
-            $prev_index = null;
-            for ($x = 1; $x <= $this->g_width; $x++) {
-                $y = ($i+1)/2; // +1/2 to turn 1,3,5->1,2,3
-                $index = $this->grid[$i][$x] . $this->grid[$i+1][$x];
-                // don't repeat same color, to try and keep bytes out low
-                $this->field[$y][$x] = ($prev_index !== $index ? ($reset . $map[$index][1]) : '') . $map[$index][0];
-                // test vs this one:
-                //$this->field[$y][$x] = $reset . $map[$index][1] . $map[$index][0];
-                $prev_index = $index;
-            }
-            $this->field[$y][$x-1] .= $reset;
-        }
-    }
+    protected $map =
+        ['00' => [' ', ""],       '01' => ['▄', "\e[33m"],    '02' => ['▄', "\e[34m"],    '03' => ['▄', "\e[31m"],
+         '10' => ['▀', "\e[33m"], '11' => [' ', "\e[43m"],    '12' => ['▄', "\e[43;34m"], '13' => ['▄', "\e[43;31m"],
+         '20' => ['▀', "\e[34m"], '21' => ['▀', "\e[34;43m"], '22' => [' ', "\e[44m"],    '23' => ['▄', "\e[44;31m"],
+         '30' => ['▀', "\e[31m"], '31' => ['▀', "\e[31;43m"], '32' => ['▀', "\e[31;44m"], '33' => [' ', "\e[41m"]];
 
     protected function advance_grid() {
         $new_grid = [];
