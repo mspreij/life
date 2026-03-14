@@ -3,14 +3,10 @@
 
 /*
 
-Do you
-- extend a base class and override things
-- just instantiate it and customize it
-- instantiate it, inject actual code for the advance/edit parts and then hit run
 Drawing:
 * display both drawing mode and brush in header
 - space still simply toggles
-  - for wireworld, maybe numbers can set/toggle (store previous value) a specific value instead of space cycling through all options
+v for wireworld, maybe numbers can set/toggle (store previous value) a specific value instead of space cycling through all options
 - set_header($str), reset_header() ? or set sub-part values that get_header() uses?
   - end status/header display with the last few characters in (increasing?) red if the whole thing doesn't fit
 - print_footer($this->footer) called in display_all(true), and print_footer($str) in [re]set_footer([$str])
@@ -68,34 +64,10 @@ class clife {
 
     protected function init_ca() {
         $this->init_handlers();
-        $this->add_shortcuts();
         $this->g_width = $this->width - 2; // $grid is half-chars, 1-based 2-dim, int values, [y][x]
         $this->g_height = ($this->height-4) * 2;
         $this->pointer = [(int) ceil($this->g_width / 2), (int) ceil($this->g_height/2)]; // init pointer (for editing) to center
         $this->init_grid();
-
-    }
-
-    protected function add_shortcuts() {
-        global $allowed_bytes, $allowed_keys; // these have to be global for get_key(). for now.
-        foreach($this->custom_keys() as $byte => $key) {
-            $allowed_keys[$byte]  = $key;
-            $allowed_bytes[$byte] = $byte;
-        }
-    }
-
-    protected function custom_keys() {
-        $custom_keys = [
-            's' => 'step',
-            'd' => 'draw',
-            'b' => 'brush',
-            'D' => 'dedraw',
-            '+' => 'faster',
-            '-' => 'slower',
-            'r' => 'random',
-            'c' => 'clear',
-        ];
-        return $custom_keys;
     }
 
     public function run() {
@@ -118,39 +90,57 @@ class clife {
     }
 
     protected function init_handlers() {
-        $this->input_handlers = $this->get_input_handlers();
+        $input_handlers = $this->get_input_handlers();
+        foreach ($input_handlers as $name => $key_func) {
+            if (is_callable($key_func)) {
+                debug("registering callable for $name");
+                get_key($name); // assume this is a known name and just works, get_key will complain otherwise
+                $this->input_handlers[$name] = $key_func;
+            }elseif (is_array($key_func) and is_string($key_func[0]) and is_callable($key_func[1])) {
+                debug("registering bytes {$key_func[0]} and callable for $name");
+                get_key($name, $key_func[0]);
+                $this->input_handlers[$name] = $key_func[1];
+            }else{
+                debug("you're crazy");
+                trigger_error("that makes no sense and you're probably crazy", E_USER_WARNING);
+            }
+        }
     }
     
     protected function get_input_handlers() {
         return [
             'enter'    => fn() => $this->running ? $this->pause() : $this->resume(),
             'space'    => fn() => $this->toggle_cell($this->pointer),
-            'up'       => fn() => $this->move_pointer('up'),
             'pageup'   => fn() => $this->move_pointer('pageup'),
             'pagedown' => fn() => $this->move_pointer('pagedown'),
+            'up'       => fn() => $this->move_pointer('up'),
             'down'     => fn() => $this->move_pointer('down'),
             'left'     => fn() => $this->move_pointer('left'),
             'right'    => fn() => $this->move_pointer('right'),
-            'step'     => function() {
-                $this->pause();
-                $this->advance_grid();
-            },
-            'draw'   => fn() => $this->draw(),
-            'brush'  => fn() => $this->brush(),
-            'faster' => function() {
-                $this->speed++;
-                $this->usleep = (int) ((1 / $this->speed)*10**6);
-            },
-            'slower' => function() {
-                $this->speed = max(1, $this->speed-1);
-                $this->usleep = (int) ((1 / $this->speed)*10**6);
-            },
-            'random' => fn() => $this->random_pattern(),
-            'clear'  => function() {
-                $this->init_grid();
-                $this->pause();
-            },
-            'quit'   => fn() => die(),
+            'ctrl-up'    => ["\e[1;5A", fn() => $this->move_pointer('up', 1)],
+            'ctrl-down'  => ["\e[1;5B", fn() => $this->move_pointer('down', 1)],
+            'ctrl-right' => ["\e[1;5C", fn() => $this->move_pointer('right', 1)],
+            'ctrl-left'  => ["\e[1;5D", fn() => $this->move_pointer('left', 1)],
+            'step'     => ['s', function() {
+                            $this->pause();
+                            $this->advance_grid();
+                        }],
+            'draw'   => ['d', fn() => $this->draw()],
+            'brush'  => fn() => $this->brush(), // fixme?
+            'faster' => ['+', function() {
+                            $this->speed++;
+                            $this->usleep = (int) ((1 / $this->speed)*10**6);
+                        }],
+            'slower' => ['-', function() {
+                            $this->speed = max(1, $this->speed-1);
+                            $this->usleep = (int) ((1 / $this->speed)*10**6);
+                        }],
+            'random' => ['r', fn() => $this->random_pattern()],
+            'clear'  => ['c', function() {
+                            $this->init_grid();
+                            $this->pause();
+                        }],
+            'quit'   => ['q', fn() => die()],
         ];
     }
 
@@ -187,6 +177,7 @@ class clife {
         }
     }
 
+    // fixme? remove?
     function brush($color='') {
         $this->brush = isset($this->colors[$this->brush + 1]) ? $this->brush + 1 : 0;
     }
@@ -197,7 +188,7 @@ class clife {
         $this->grid[$y][$x] = $this->grid[$y][$x] ? 0 : $this->brush;
     }
 
-    protected function move_pointer($direction) {
+    protected function move_pointer($direction, $paint=false) {
         $this->pause();
         [$current_x, $current_y] = $this->pointer;
         switch ($direction) {
@@ -220,7 +211,7 @@ class clife {
                 $this->pointer[0] < $this->g_width ? $this->pointer[0]++ : $this->pointer[0] = 1;
                 break;
         }
-        if ($this->drawing) {
+        if ($this->drawing or $paint) {
             // both current and next, so it starts drawing on the spot you are when you start moving
             $this->grid[$this->pointer[1]][$this->pointer[0]] = $this->grid[$current_y][$current_x] = $this->brush;
         }
@@ -300,7 +291,6 @@ class clife {
         $color = $this->grid[$py][$px] ? 208 : 196; // todo: move color values to properties
         $bg = $this->grid[$ay][$px] ? "\e[48:5:15m" : "\e[0m";
         $this->field[$oy][$ox] = "$bg\e[38;5;{$color}m".($py%2?"▀":"▄")."\e[0m".$this->map[$index][1];
-        debug('wat');
     }
 
     function print_frame() {
@@ -401,14 +391,22 @@ class wireworld extends clife {
 
     function get_input_handlers() {
         $handlers = parent::get_input_handlers();
-        $handlers['clear'] = function() {
-            foreach($this->grid as $y => $row) {
-                foreach($row as $x => $value) {
-                    if ($value > 1) $this->grid[$y][$x] = 1;
-                }
-            }
-            $this->pause();
-        };
+        $handlers['clear'] = ['c', function() {
+                    foreach($this->grid as $y => $row) {
+                        foreach($row as $x => $value) {
+                            if ($value > 1) $this->grid[$y][$x] = 1;
+                        }
+                    }
+                    $this->pause();
+                }];
+        $handlers['head'] = ['1', function() {
+            [$x, $y] = $this->pointer;
+            $this->grid[$y][$x] = 2;
+        }];
+        $handlers['tail'] = ['2', function() {
+            [$x, $y] = $this->pointer;
+            $this->grid[$y][$x] = 3;
+        }];
         return $handlers;
     }
 

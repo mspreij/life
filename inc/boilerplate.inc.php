@@ -45,7 +45,7 @@ error_reporting(-1);
 ini_set('log_errors', '1');
 
 // boilerplate can be included but some of these just have to be global.
-global $argv, $allowed_keys, $allowed_bytes, $blocking, $usleep;
+global $argv, $blocking, $usleep, $key_map;
 
 // Logging path: script location, or generic location somewhere in user home.
 $_backtrace = debug_backtrace();
@@ -91,24 +91,18 @@ pcntl_signal(SIGWINCH, function () {
     if (function_exists('display_all')) display_all();
 });
 
-$allowed_keys = [
-    // \e = 'esc'; this can not be a key because CSIs would no longer work. get_input takes care of it
-    "\e[A"  => 'up',
-    "\e[B"  => 'down',
-    "\e[C"  => 'right',
-    "\e[D"  => 'left',
-    "\e[5~" => 'pageup',
-    "\e[6~" => 'pagedown',
-    "e"     => 'edit',
-    "v"     => 'view',
-    "i"     => 'preview',
-    "\x0A"  => 'enter',
-    "\x0D"  => 'enter', // it's one of these, probably
-    "q"     => 'quit',
-    " "     => 'space',
+$key_map = [
+    'up'       => "\e[A",
+    'down'     => "\e[B",
+    'right'    => "\e[C",
+    'left'     => "\e[D",
+    'pageup'   => "\e[5~",
+    'pagedown' => "\e[6~",
+    'enter'    => "\x0A",
+    // 'enter'    => "\x0D",
+    'space'    =>  " ",
     // tab
 ];
-$allowed_bytes = array_flip(str_split(join('', array_keys($allowed_keys))));
 
 // if the parent script is called with --debug-listen, start this debug listener and nothing else.
 // not very useful on its own, run it in a separate window/pane. Exit with Esc or q.
@@ -125,10 +119,38 @@ $_debug = in_array('--debug', $argv);
 
 // == FUNCTIONS ==========================
 
-function get_key() {
-    global $allowed_bytes, $allowed_keys;
+function get_key(string $name='', $bytes='') {
+    global $key_map;
+    static $allowed_bytes = [];
+    static $allowed_keys = [];
+    // one exception, this should not arrive in $allowed_keys
+    static $esc = false;
+    static $esc_name = '';
+    if (strlen($name) > 0) {
+        if ($bytes === "\e" or $name === "\e") {
+            $esc = true;
+            $esc_name = $name;
+            if ($name === "\e") trigger_error("name should be descriptive, like 'esc' or 'escape'", E_USER_NOTICE);
+            return;
+        }
+        if (! strlen($bytes)) {
+            if (strlen($name) === 1) {
+                $bytes = $name;
+            }elseif (isset($key_map[$name])) {
+                $bytes = $key_map[$name];
+            }else{
+                trigger_error("unknown key name '$name'", E_USER_WARNING);
+                return false;
+            }
+        }
+        $allowed_keys[$bytes] = $name;
+        foreach(str_split($bytes) as $char) {
+            $allowed_bytes[$char] = $char;
+        }
+        return;
+    }
     $input = $key = '';
-    while ($byte = fgetc(STDIN)) {
+    while (($byte = fgetc(STDIN)) !== false) {
         if (isset($allowed_bytes[$byte])) $input .= $byte;
         if (isset($allowed_keys[$input])) {
             $key = $allowed_keys[$input];
@@ -143,7 +165,7 @@ function get_key() {
             break;
         }
     }
-    if ($input === "\e") $key = "esc";
+    if ($esc and $input === "\e") $key = $esc_name;
     return $key;
 }
 
